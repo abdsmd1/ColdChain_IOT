@@ -1,0 +1,179 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cold Chain · Dashboard</title>
+  <link rel="stylesheet" href="{% static 'DHT/style.css' %}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">
+      <div class="logo-mark">❄</div>
+      <div>Cold Chain<small>ESP8266 · DHT11</small></div>
+    </div>
+    <nav>
+      <a href="{% url 'dashboard' %}" class="active">Dashboard</a>
+      <a href="{% url 'history' %}">Archives des incidents</a>
+    </nav>
+    <div class="spacer"></div>
+    <div id="sensor-pill" class="pill"><span class="dot"></span><span>Connexion…</span></div>
+  </div>
+</header>
+
+<main>
+  <h1>Supervision en temps réel</h1>
+  <p class="subtitle">Mesures envoyées par l'ESP8266 vers l'API Django · actualisation automatique toutes les 5 s</p>
+
+  <div id="banner" class="banner"></div>
+
+  <section class="grid-cards">
+    <div class="card temp">
+      <div class="card-label">🌡️ Température</div>
+      <div class="card-value"><span id="temp">--</span><span class="unit">°C</span></div>
+      <div class="card-foot" id="temp-foot">Min -- · Max --</div>
+    </div>
+    <div class="card hum">
+      <div class="card-label">💧 Humidité</div>
+      <div class="card-value"><span id="hum">--</span><span class="unit">%</span></div>
+      <div class="card-foot" id="hum-foot">Min -- · Max --</div>
+    </div>
+    <div class="card time">
+      <div class="card-label">⏱️ Dernière mesure</div>
+      <div class="card-value" style="font-size:28px" id="ago">--</div>
+      <div class="card-foot" id="last-time">--</div>
+    </div>
+    <div class="card state" id="state-card">
+      <div class="card-label">🛡️ Chaîne du froid</div>
+      <div class="state-text" id="state-text">--</div>
+      <div class="card-foot" id="state-foot">Plage autorisée : -- °C</div>
+    </div>
+  </section>
+
+  <section style="margin-bottom:20px">
+    <div class="card">
+      <div class="panel-title"><h2>Seuils d'alerte</h2></div>
+      <form id="thresholds-form" class="thresholds-inline">
+        <div class="field">
+          <label for="tmin">Température minimale (°C)</label>
+          <input id="tmin" type="number" step="0.5" required>
+        </div>
+        <div class="field">
+          <label for="tmax">Température maximale (°C)</label>
+          <input id="tmax" type="number" step="0.5" required>
+        </div>
+        <button class="btn" type="submit">Enregistrer les seuils</button>
+      </form>
+      <p class="hint">Chaîne du froid standard : 2 à 8 °C. Toute mesure hors de cette plage
+        ouvre un incident, clôturé dès le retour dans la plage.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="panel-title">
+      <h2>Dernières mesures</h2>
+      <div class="toolbar"><a href="/api/get" target="_blank">Voir le JSON de l'API ↗</a></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Date</th><th>Température (°C)</th><th>Humidité (%)</th><th>État</th></tr></thead>
+        <tbody id="last-rows"><tr><td colspan="5" class="empty">Chargement…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="{% static 'DHT/common.js' %}"></script>
+<script>
+  let measures = [];
+  let thresholds = getThresholds();
+
+  // ----- Formulaire des seuils -----
+  const tminInput = document.getElementById("tmin");
+  const tmaxInput = document.getElementById("tmax");
+  tminInput.value = thresholds.min;
+  tmaxInput.value = thresholds.max;
+
+  document.getElementById("thresholds-form").addEventListener("submit", e => {
+    e.preventDefault();
+    const min = parseFloat(tminInput.value), max = parseFloat(tmaxInput.value);
+    if (min >= max) { alert("Le minimum doit être inférieur au maximum."); return; }
+    thresholds = { min, max };
+    saveThresholds(min, max);
+    render();
+  });
+
+  // ----- Rendu -----
+  function render() {
+    const { min, max } = thresholds;
+    document.getElementById("state-foot").textContent = `Plage autorisée : ${min} à ${max} °C`;
+
+    const tbody = document.getElementById("last-rows");
+    if (!measures.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">Aucune mesure pour l'instant — l'ESP8266 est-il branché ?</td></tr>`;
+      return;
+    }
+
+    const last = measures[measures.length - 1];
+    const isOut = t => t < min || t > max;
+
+    document.getElementById("temp").textContent = last.temp.toFixed(1);
+    document.getElementById("hum").textContent = last.hum !== null ? last.hum.toFixed(0) : "--";
+
+    const temps = measures.map(m => m.temp), hums = measures.map(m => m.hum).filter(h => h !== null);
+    document.getElementById("temp-foot").textContent = `Min ${Math.min(...temps).toFixed(1)} · Max ${Math.max(...temps).toFixed(1)} °C`;
+    if (hums.length) document.getElementById("hum-foot").textContent = `Min ${Math.min(...hums)} · Max ${Math.max(...hums)} %`;
+    document.getElementById("last-time").textContent = fmtDate(last.date);
+
+    // État de la chaîne du froid
+    const incidents = computeIncidents(measures, thresholds);
+    const open = incidents.find(i => !i.end);
+    const card = document.getElementById("state-card");
+    card.classList.toggle("alert", !!open);
+    card.classList.toggle("ok", !open);
+    document.getElementById("state-text").textContent = open ? "⚠ Alerte" : "✔ Conforme";
+    if (open) {
+      document.getElementById("state-foot").textContent =
+        `Incident #${open.id} en cours depuis ${fmtDuration(Date.now() - open.start)} · plage ${min}–${max} °C`;
+    }
+
+    // Tableau des 10 dernières mesures
+    tbody.innerHTML = measures.slice(-10).reverse().map(m => `
+      <tr>
+        <td>#${m.id}</td>
+        <td>${fmtDate(m.date)}</td>
+        <td class="num ${isOut(m.temp) ? "out" : ""}">${m.temp.toFixed(1)}</td>
+        <td class="num">${m.hum !== null ? m.hum.toFixed(0) : "--"}</td>
+        <td>${isOut(m.temp) ? '<span class="badge open">Hors seuil</span>' : '<span class="badge closed">OK</span>'}</td>
+      </tr>`).join("");
+
+    tickAgo();
+  }
+
+  // Compteur "il y a X s" mis à jour chaque seconde
+  function tickAgo() {
+    if (!measures.length) return;
+    const last = measures[measures.length - 1];
+    document.getElementById("ago").textContent = fmtAgo(last.date);
+    setOnline((Date.now() - last.date) / 1000 < OFFLINE_AFTER_S);
+  }
+
+  async function refresh() {
+    try {
+      measures = await fetchMeasures();
+      showBanner("");
+      render();
+    } catch (e) {
+      showBanner("Impossible de joindre l'API Django (" + e.message + "). Le serveur runserver est-il lancé ?");
+      setOnline(false);
+    }
+  }
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+  setInterval(tickAgo, 1000);
+</script>
+</body>
+</html>

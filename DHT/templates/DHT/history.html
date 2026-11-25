@@ -1,0 +1,128 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cold Chain · Archives des incidents</title>
+  <link rel="stylesheet" href="{% static 'DHT/style.css' %}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">
+      <div class="logo-mark">❄</div>
+      <div>Cold Chain<small>ESP8266 · DHT11</small></div>
+    </div>
+    <nav>
+      <a href="{% url 'dashboard' %}">Dashboard</a>
+      <a href="{% url 'history' %}" class="active">Archives des incidents</a>
+    </nav>
+    <div class="spacer"></div>
+    <div id="sensor-pill" class="pill"><span class="dot"></span><span>Connexion…</span></div>
+  </div>
+</header>
+
+<main>
+  <h1>Archives des incidents (DHT11)</h1>
+  <p class="subtitle" id="subtitle">Un incident commence quand la température sort de la plage autorisée et se clôture à son retour.</p>
+
+  <div id="banner" class="banner"></div>
+
+  <section class="stats">
+    <div class="card">
+      <div class="card-label">Incidents enregistrés</div>
+      <div class="card-value" id="s-total">--</div>
+      <div class="card-foot" id="s-open">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Durée cumulée hors seuil</div>
+      <div class="card-value" style="font-size:28px" id="s-duration">--</div>
+      <div class="card-foot">tous incidents confondus</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Température extrême</div>
+      <div class="card-value"><span id="s-extreme">--</span><span class="unit">°C</span></div>
+      <div class="card-foot" id="s-range">--</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="panel-title">
+      <h2>Historique</h2>
+      <div class="toolbar"><a href="{% url 'dashboard' %}">← Retour au dashboard</a></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Date début</th><th>Date fin</th><th>Durée</th>
+            <th>Compteur d'alertes</th><th>Temp. max (°C)</th><th>Temp. min (°C)</th><th>État</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="8" class="empty">Chargement…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="{% static 'DHT/common.js' %}"></script>
+<script>
+  async function refresh() {
+    let measures;
+    try {
+      measures = await fetchMeasures();
+      showBanner("");
+    } catch (e) {
+      showBanner("Impossible de joindre l'API Django (" + e.message + ").");
+      setOnline(false);
+      return;
+    }
+
+    const th = getThresholds();
+    const incidents = computeIncidents(measures, th);
+    const now = Date.now();
+    const durationOf = inc => (inc.end ? inc.end : now) - inc.start;
+
+    // Statistiques
+    const openCount = incidents.filter(i => !i.end).length;
+    document.getElementById("s-total").textContent = incidents.length;
+    document.getElementById("s-open").textContent = openCount ? `${openCount} en cours` : "aucun en cours";
+    document.getElementById("s-duration").textContent =
+      fmtDuration(incidents.reduce((sum, i) => sum + durationOf(i), 0));
+    document.getElementById("s-range").textContent = `Plage autorisée : ${th.min} à ${th.max} °C`;
+    if (incidents.length) {
+      const hottest = Math.max(...incidents.map(i => i.tmax));
+      const coldest = Math.min(...incidents.map(i => i.tmin));
+      const extreme = (hottest - th.max) >= (th.min - coldest) ? hottest : coldest;
+      document.getElementById("s-extreme").textContent = extreme.toFixed(1);
+    } else {
+      document.getElementById("s-extreme").textContent = "--";
+    }
+
+    if (measures.length) setOnline((now - measures[measures.length - 1].date) / 1000 < OFFLINE_AFTER_S);
+
+    // Tableau
+    const tbody = document.getElementById("rows");
+    if (!incidents.length) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">Aucun incident : la température est toujours restée entre ${th.min} et ${th.max} °C 👍</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = incidents.map(i => `
+      <tr>
+        <td>#${i.id}</td>
+        <td>${fmtDate(i.start)}</td>
+        <td>${i.end ? fmtDate(i.end) : "—"}</td>
+        <td>${fmtDuration(durationOf(i))}</td>
+        <td class="num">${i.count}</td>
+        <td class="num ${i.tmax > th.max ? "out" : ""}">${i.tmax.toFixed(1)}</td>
+        <td class="num ${i.tmin < th.min ? "out" : ""}">${i.tmin.toFixed(1)}</td>
+        <td>${i.end ? '<span class="badge closed">Clôturé</span>' : '<span class="badge open">En cours</span>'}</td>
+      </tr>`).join("");
+  }
+
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
